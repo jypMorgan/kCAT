@@ -1,3 +1,5 @@
+// Copyright (c) 2026, ShujaaQureshii
+
 #ifndef BUILDER_WASM_BUILDER_H_
 #define BUILDER_WASM_BUILDER_H_
 
