@@ -1,5 +1,5 @@
+//Copyright (c) 2026, ShujaaQureshii
 #include "WasmBuilder.h"
-
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
@@ -21,8 +21,8 @@ constexpr size_t kMaxImports = 200'000;
 constexpr size_t kMaxStringRefs = 100'000;
 constexpr size_t kMaxRecGroups = 100'000;
 constexpr size_t kMaxExplicitSections = 10'000;
-constexpr size_t kMaxModuleBytes = 512 * 1024 * 1024;  // 512 MiB
-constexpr size_t kMaxExprBytes = 64 * 1024 * 1024;     // 64 MiB per expr
+constexpr size_t kMaxModuleBytes = 512 * 1024 * 1024;
+constexpr size_t kMaxExprBytes = 64 * 1024 * 1024;    
 constexpr size_t kMaxLocalsPerFunction = 1'000'000;
 constexpr size_t kMaxCompilationPriorities = 200'000;
 constexpr size_t kMaxInstructionFrequencies = 200'000;
