@@ -1,12 +1,9 @@
-#include "wasm_builder.h"
+#include "WasmBuilder.h"
+
 #include <algorithm>
-#include <cmath>
 #include <cstdint>
-#include <cstdlib>
 #include <cstring>
-#include <iomanip>
 #include <limits>
-#include <sstream>
 #include <type_traits>
 
 namespace {
@@ -31,8 +28,6 @@ constexpr size_t kMaxCompilationPriorities = 200'000;
 constexpr size_t kMaxInstructionFrequencies = 200'000;
 constexpr size_t kMaxCallTargets = 200'000;
 
-const uint32_t kInvalidIndex = 0xFFFFFFFF;
-
 thread_local int g_stack_depth = 0;
 constexpr int kMaxStackDepth = 1024;
 
@@ -43,32 +38,6 @@ struct StackDepthGuard {
   }
   ~StackDepthGuard() { --g_stack_depth; }
 };
-
-// Safe arithmetic
-template <typename T>
-bool AddOverflow(T a, T b, T* out) {
-  static_assert(std::is_integral_v<T>, "AddOverflow requires integral type");
-  if constexpr (std::is_unsigned_v<T>) {
-    *out = a + b;
-    return *out < a;
-  } else {
-    if (b > 0 && a > std::numeric_limits<T>::max() - b) return true;
-    if (b < 0 && a < std::numeric_limits<T>::min() - b) return true;
-    *out = a + b;
-    return false;
-  }
-}
-
-template <typename T>
-bool MulOverflow(T a, T b, T* out) {
-  static_assert(std::is_integral_v<T>, "MulOverflow requires integral type");
-  if (a == 0 || b == 0) {
-    *out = 0;
-    return false;
-  }
-  *out = a * b;
-  return a != *out / b;
-}
 
 bool IsValidUTF8(std::string_view str) {
   const uint8_t* bytes = reinterpret_cast<const uint8_t*>(str.data());
@@ -149,14 +118,6 @@ bool IsValidReferenceType(int8_t type) {
 
 bool IsValidTableType(int8_t type) {
   return IsValidReferenceType(type);
-}
-
-bool IsValidGlobalType(int8_t type) {
-  return IsValidValueType(type) || IsValidReferenceType(type);
-}
-
-void ValidateTypeIndex(uint32_t idx, uint32_t limit) {
-  CHECK(idx < limit);
 }
 
 void ValidateTypeVariant(const std::variant<int8_t, cat::wasm_builder::RefTypeBuilder>& type) {
@@ -415,12 +376,9 @@ void Binary::EmitInitExpr(std::span<const uint8_t> expr) {
 }
 
 void Binary::EmitHeader() {
-  EmitBytes(std::span<const uint8_t>(
-      reinterpret_cast<const uint8_t*>(
-          std::array<uint8_t, 8>{kWasmH0, kWasmH1, kWasmH2, kWasmH3,
-                                 kWasmV0, kWasmV1, kWasmV2, kWasmV3}
-              .data()),
-      8));
+  static const uint8_t kHeader[8] = {kWasmH0, kWasmH1, kWasmH2, kWasmH3,
+                                     kWasmV0, kWasmV1, kWasmV2, kWasmV3};
+  EmitBytes(std::span<const uint8_t>(kHeader, 8));
 }
 
 void Binary::EmitSection(uint8_t section_code,
@@ -446,7 +404,6 @@ WasmFunctionBuilder::WasmFunctionBuilder(
       type_index_(type_index),
       local_names_(std::move(arg_names)) {
   CHECK(module != nullptr);
-  CHECK(type_index <= std::numeric_limits<uint32_t>::max() / 2);
 }
 
 WasmFunctionBuilder& WasmFunctionBuilder::ExportAs(const std::string& name) {
@@ -477,7 +434,12 @@ WasmFunctionBuilder& WasmFunctionBuilder::AddBodyWithEnd(
 WasmFunctionBuilder& WasmFunctionBuilder::AddLocals(
     std::variant<int8_t, RefTypeBuilder> type, uint32_t count,
     const std::vector<std::string>& names) {
-  CHECK(count <= kMaxLocalsPerFunction);
+  uint32_t current_total = 0;
+  for (const auto& decl : locals_) {
+    current_total += decl.second;
+  }
+  CHECK(current_total <= kMaxLocalsPerFunction);
+  CHECK(count <= kMaxLocalsPerFunction - current_total);
   CHECK(names.size() <= static_cast<size_t>(count));
   ValidateTypeVariant(type);
   locals_.push_back({type, count});
@@ -562,26 +524,6 @@ ImportGroupBuilder::ImportGroupBuilder(
   if (kind.has_value()) {
     CHECK(kind.value() <= kExternalTag);
   }
-}
-
-uint32_t ImportGroupBuilder::Add(const std::string& name) {
-  CHECK(kind_.has_value());
-  ImportEntry entry;
-  entry.name = name;
-  entry.kind = kind_.value();
-  entry.encoding = encoding_;
-  if (prototype_.has_value()) {
-    entry.type_index = prototype_->type_index;
-    entry.type = prototype_->type;
-    entry.mutable_ = prototype_->mutable_;
-    entry.shared = prototype_->shared;
-    entry.initial = prototype_->initial;
-    entry.maximum = prototype_->maximum;
-    entry.is_memory64 = prototype_->is_memory64;
-    entry.is_table64 = prototype_->is_table64;
-  }
-  imports_.push_back(entry);
-  return builder_->AllocateImportIndex(entry.kind);
 }
 
 uint32_t ImportGroupBuilder::AddFunction(const std::string& name,
@@ -1161,7 +1103,6 @@ WasmModuleBuilder& WasmModuleBuilder::AddExport(const std::string& name,
                                                   uint32_t index) {
   CHECK(!name.empty());
   CHECK(exports_.size() < kMaxExports);
-  CHECK(index <= std::numeric_limits<uint32_t>::max() / 2);
   exports_.push_back({name, kExternalFunction, index});
   return *this;
 }
@@ -1176,7 +1117,6 @@ WasmModuleBuilder& WasmModuleBuilder::AddExportOfKind(const std::string& name,
       kind != kExternalTable && kind != kExternalMemory) {
     CHECK(false);
   }
-  CHECK(index <= std::numeric_limits<uint32_t>::max() / 2);
   exports_.push_back({name, kind, index});
   return *this;
 }
@@ -1326,26 +1266,6 @@ uint32_t WasmModuleBuilder::AddDeclarativeElementSegment(
   return static_cast<uint32_t>(element_segments_.size()) - 1;
 }
 
-WasmModuleBuilder& WasmModuleBuilder::AppendToTable(
-    const std::vector<uint32_t>& array) {
-  for (auto n : array) {
-    (void)n;
-  }
-  if (tables_.empty()) {
-    AddTable(kWasmFuncRef, 0);
-  }
-  return *this;
-}
-
-WasmModuleBuilder& WasmModuleBuilder::SetTableBounds(
-    uint32_t min, std::optional<uint32_t> max) {
-  if (!tables_.empty()) {
-    CHECK(false);
-  }
-  AddTable(kWasmFuncRef, min, max);
-  return *this;
-}
-
 WasmModuleBuilder& WasmModuleBuilder::StartRecGroup() {
   CHECK(rec_groups_.size() < kMaxRecGroups);
   rec_group_stack_.push_back(1);
@@ -1441,17 +1361,14 @@ std::vector<uint8_t> WasmModuleBuilder::DefaultFor(
         return WasmF32Const(0.0f);
       case kWasmF64:
         return WasmF64Const(0.0);
-      case kWasmS128: {
-        std::vector<uint8_t> v(16, 0);
-        return {kSimdPrefix, 0x0c, v[0],  v[1],  v[2],  v[3],
-                              v[4],  v[5],  v[6],  v[7],
-                              v[8],  v[9],  v[10], v[11],
-                              v[12], v[13], v[14], v[15]};
-      }
-      case kWasmStringViewIter:
-      case kWasmStringViewWtf8:
-      case kWasmStringViewWtf16:
-        CHECK(false);
+      case kWasmS128:
+        return {kSimdPrefix, 0x0c, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0};
+      case kWasmI8:
+      case kWasmI16:
+      case kWasmF16:
+        CHECK(false);  // Packed types have no standalone default initializer
+        break;
       default:
         break;
     }
@@ -1470,9 +1387,6 @@ std::vector<uint8_t> WasmModuleBuilder::DefaultFor(
 
 void WasmModuleBuilder::CheckExpr(std::span<const uint8_t> expr) {
   CHECK(expr.size() <= kMaxExprBytes);
-  for (uint8_t b : expr) {
-    (void)b;
-  }
 }
 
 uint32_t WasmModuleBuilder::AllocateImportIndex(uint8_t kind) {
@@ -1530,8 +1444,7 @@ void WasmModuleBuilder::EmitExternType(Binary& bin,
   }
 }
 
-void WasmModuleBuilder::EmitTypeSection(Binary& bin, bool debug) const {
-  (void)debug;
+void WasmModuleBuilder::EmitTypeSection(Binary& bin, bool /*debug*/) const {
   bin.EmitSection(kTypeSectionCode, [&](Binary& section) {
     uint32_t length_with_groups =
         static_cast<uint32_t>(types_.size());
@@ -1623,8 +1536,7 @@ void WasmModuleBuilder::EmitTypeSection(Binary& bin, bool debug) const {
   });
 }
 
-void WasmModuleBuilder::EmitImportSection(Binary& bin, bool debug) const {
-  (void)debug;
+void WasmModuleBuilder::EmitImportSection(Binary& bin, bool /*debug*/) const {
   bin.EmitSection(kImportSectionCode, [&](Binary& section) {
     section.EmitU32v(static_cast<uint32_t>(imports_.size()));
     for (const auto& imp_var : imports_) {
@@ -1668,8 +1580,7 @@ void WasmModuleBuilder::EmitImportSection(Binary& bin, bool debug) const {
   });
 }
 
-void WasmModuleBuilder::EmitFunctionSection(Binary& bin, bool debug) const {
-  (void)debug;
+void WasmModuleBuilder::EmitFunctionSection(Binary& bin, bool /*debug*/) const {
   bin.EmitSection(kFunctionSectionCode, [&](Binary& section) {
     section.EmitU32v(static_cast<uint32_t>(functions_.size()));
     for (const auto& func : functions_) {
@@ -1679,8 +1590,7 @@ void WasmModuleBuilder::EmitFunctionSection(Binary& bin, bool debug) const {
   });
 }
 
-void WasmModuleBuilder::EmitTableSection(Binary& bin, bool debug) const {
-  (void)debug;
+void WasmModuleBuilder::EmitTableSection(Binary& bin, bool /*debug*/) const {
   bin.EmitSection(kTableSectionCode, [&](Binary& section) {
     section.EmitU32v(static_cast<uint32_t>(tables_.size()));
     for (const auto& table : tables_) {
@@ -1707,8 +1617,7 @@ void WasmModuleBuilder::EmitTableSection(Binary& bin, bool debug) const {
   });
 }
 
-void WasmModuleBuilder::EmitMemorySection(Binary& bin, bool debug) const {
-  (void)debug;
+void WasmModuleBuilder::EmitMemorySection(Binary& bin, bool /*debug*/) const {
   bin.EmitSection(kMemorySectionCode, [&](Binary& section) {
     section.EmitU32v(static_cast<uint32_t>(memories_.size()));
     for (size_t i = 0; i < memories_.size(); ++i) {
@@ -1729,8 +1638,7 @@ void WasmModuleBuilder::EmitMemorySection(Binary& bin, bool debug) const {
   });
 }
 
-void WasmModuleBuilder::EmitTagSection(Binary& bin, bool debug) const {
-  (void)debug;
+void WasmModuleBuilder::EmitTagSection(Binary& bin, bool /*debug*/) const {
   bin.EmitSection(kTagSectionCode, [&](Binary& section) {
     section.EmitU32v(static_cast<uint32_t>(tags_.size()));
     for (uint32_t type_index : tags_) {
@@ -1741,8 +1649,7 @@ void WasmModuleBuilder::EmitTagSection(Binary& bin, bool debug) const {
   });
 }
 
-void WasmModuleBuilder::EmitStringRefSection(Binary& bin, bool debug) const {
-  (void)debug;
+void WasmModuleBuilder::EmitStringRefSection(Binary& bin, bool /*debug*/) const {
   bin.EmitSection(kStringRefSectionCode, [&](Binary& section) {
     section.EmitU32v(0);
     section.EmitU32v(static_cast<uint32_t>(stringrefs_.size()));
@@ -1752,8 +1659,7 @@ void WasmModuleBuilder::EmitStringRefSection(Binary& bin, bool debug) const {
   });
 }
 
-void WasmModuleBuilder::EmitGlobalSection(Binary& bin, bool debug) const {
-  (void)debug;
+void WasmModuleBuilder::EmitGlobalSection(Binary& bin, bool /*debug*/) const {
   bin.EmitSection(kGlobalSectionCode, [&](Binary& section) {
     section.EmitU32v(static_cast<uint32_t>(globals_.size()));
     for (const auto& global : globals_) {
@@ -1766,8 +1672,7 @@ void WasmModuleBuilder::EmitGlobalSection(Binary& bin, bool debug) const {
   });
 }
 
-void WasmModuleBuilder::EmitExportSection(Binary& bin, bool debug) const {
-  (void)debug;
+void WasmModuleBuilder::EmitExportSection(Binary& bin, bool /*debug*/) const {
   bin.EmitSection(kExportSectionCode, [&](Binary& section) {
     section.EmitU32v(static_cast<uint32_t>(exports_.size()));
     for (const auto& exp : exports_) {
@@ -1778,16 +1683,14 @@ void WasmModuleBuilder::EmitExportSection(Binary& bin, bool debug) const {
   });
 }
 
-void WasmModuleBuilder::EmitStartSection(Binary& bin, bool debug) const {
-  (void)debug;
+void WasmModuleBuilder::EmitStartSection(Binary& bin, bool /*debug*/) const {
   CHECK(start_index_.has_value());
   bin.EmitSection(kStartSectionCode, [&](Binary& section) {
     section.EmitU32v(start_index_.value());
   });
 }
 
-void WasmModuleBuilder::EmitElementSection(Binary& bin, bool debug) const {
-  (void)debug;
+void WasmModuleBuilder::EmitElementSection(Binary& bin, bool /*debug*/) const {
   bin.EmitSection(kElementSectionCode, [&](Binary& section) {
     section.EmitU32v(static_cast<uint32_t>(element_segments_.size()));
     for (const auto& seg : element_segments_) {
@@ -1851,21 +1754,19 @@ void WasmModuleBuilder::EmitElementSection(Binary& bin, bool debug) const {
   });
 }
 
-void WasmModuleBuilder::EmitDataCountSection(Binary& bin, bool debug) const {
-  (void)debug;
+void WasmModuleBuilder::EmitDataCountSection(Binary& bin, bool /*debug*/) const {
   bin.EmitSection(kDataCountSectionCode, [&](Binary& section) {
     section.EmitU32v(static_cast<uint32_t>(data_segments_.size()));
   });
 }
 
-void WasmModuleBuilder::EmitCodeSection(Binary& bin, bool debug) const {
-  (void)debug;
+void WasmModuleBuilder::EmitCodeSection(Binary& bin, bool /*debug*/) const {
   bin.EmitSection(kCodeSectionCode, [&](Binary& section) {
     section.EmitU32v(static_cast<uint32_t>(functions_.size()));
     for (const auto& func : functions_) {
       if (func->locals().empty()) {
         size_t body_size = func->body().size();
-        CHECK(body_size <= std::numeric_limits<uint32_t>::max());
+        CHECK(body_size < std::numeric_limits<uint32_t>::max());
         section.EmitU32v(static_cast<uint32_t>(body_size + 1));
         section.EmitU8(0);
       } else {
@@ -1886,8 +1787,7 @@ void WasmModuleBuilder::EmitCodeSection(Binary& bin, bool debug) const {
   });
 }
 
-void WasmModuleBuilder::EmitDataSection(Binary& bin, bool debug) const {
-  (void)debug;
+void WasmModuleBuilder::EmitDataSection(Binary& bin, bool /*debug*/) const {
   bin.EmitSection(kDataSectionCode, [&](Binary& section) {
     section.EmitU32v(static_cast<uint32_t>(data_segments_.size()));
     for (const auto& seg : data_segments_) {
@@ -1910,15 +1810,13 @@ void WasmModuleBuilder::EmitDataSection(Binary& bin, bool debug) const {
   });
 }
 
-void WasmModuleBuilder::EmitExplicitSections(Binary& bin, bool debug) const {
-  (void)debug;
+void WasmModuleBuilder::EmitExplicitSections(Binary& bin, bool /*debug*/) const {
   for (const auto& exp : explicit_) {
     bin.EmitBytes(std::span<const uint8_t>(exp));
   }
 }
 
-void WasmModuleBuilder::EmitNameSection(Binary& bin, bool debug) const {
-  (void)debug;
+void WasmModuleBuilder::EmitNameSection(Binary& bin, bool /*debug*/) const {
   uint32_t num_function_names = 0;
   uint32_t num_functions_with_local_names = 0;
   for (const auto& func : functions_) {
@@ -1980,8 +1878,7 @@ void WasmModuleBuilder::EmitNameSection(Binary& bin, bool debug) const {
 }
 
 void WasmModuleBuilder::EmitCompilationPrioritySection(Binary& bin,
-                                                          bool debug) const {
-  (void)debug;
+                                                          bool /*debug*/) const {
   bin.EmitSection(kUnknownSectionCode, [&](Binary& section) {
     section.EmitString("metadata.code.compilation_priority");
     section.EmitU32v(
@@ -2004,8 +1901,7 @@ void WasmModuleBuilder::EmitCompilationPrioritySection(Binary& bin,
 }
 
 void WasmModuleBuilder::EmitInstructionFrequencySection(Binary& bin,
-                                                           bool debug) const {
-  (void)debug;
+                                                           bool /*debug*/) const {
   bin.EmitSection(kUnknownSectionCode, [&](Binary& section) {
     section.EmitString("metadata.code.instr_freq");
     section.EmitU32v(
@@ -2022,8 +1918,7 @@ void WasmModuleBuilder::EmitInstructionFrequencySection(Binary& bin,
   });
 }
 
-void WasmModuleBuilder::EmitCallTargetSection(Binary& bin, bool debug) const {
-  (void)debug;
+void WasmModuleBuilder::EmitCallTargetSection(Binary& bin, bool /*debug*/) const {
   bin.EmitSection(kUnknownSectionCode, [&](Binary& section) {
     section.EmitString("metadata.code.call_targets");
     section.EmitU32v(static_cast<uint32_t>(call_targets_.size()));
@@ -2233,128 +2128,6 @@ std::vector<uint8_t> WasmEncodeHeapType(const RefTypeBuilder& type) {
   if (type.is_exact()) result.push_back(kWasmExact);
   result.insert(result.end(), leb.begin(), leb.end());
   return result;
-}
-
-std::vector<uint8_t> GCInstr(uint8_t opcode) {
-  if (opcode <= 0x7F) {
-    return {kGCPrefix, opcode};
-  }
-  return {kGCPrefix, static_cast<uint8_t>(0x80 | (opcode & 0x7F)),
-          static_cast<uint8_t>(opcode >> 7)};
-}
-
-std::vector<uint8_t> SimdInstr(uint8_t opcode) {
-  if (opcode <= 0x7F) {
-    return {kSimdPrefix, opcode};
-  }
-  return {kSimdPrefix, static_cast<uint8_t>(0x80 | (opcode & 0x7F)),
-          static_cast<uint8_t>(opcode >> 7)};
-}
-
-std::vector<uint8_t> WasmBrOnCast(uint32_t label_idx,
-                                   const RefTypeBuilder& source_type,
-                                   const RefTypeBuilder& target_type) {
-  auto label_leb = WasmUnsignedLeb(label_idx);
-  bool src_nullable = source_type.opcode() == kWasmRefNull;
-  bool tgt_nullable = target_type.opcode() == kWasmRefNull;
-  uint8_t flags = (tgt_nullable ? 2 : 0) | (src_nullable ? 1 : 0);
-  std::vector<uint8_t> result = {kGCPrefix, kExprBrOnCast, flags};
-  result.insert(result.end(), label_leb.begin(), label_leb.end());
-  auto src_enc = WasmEncodeHeapType(source_type);
-  auto tgt_enc = WasmEncodeHeapType(target_type);
-  result.insert(result.end(), src_enc.begin(), src_enc.end());
-  result.insert(result.end(), tgt_enc.begin(), tgt_enc.end());
-  return result;
-}
-
-std::vector<uint8_t> WasmBrOnCastFail(uint32_t label_idx,
-                                       const RefTypeBuilder& source_type,
-                                       const RefTypeBuilder& target_type) {
-  auto label_leb = WasmUnsignedLeb(label_idx);
-  bool src_nullable = source_type.opcode() == kWasmRefNull;
-  bool tgt_nullable = target_type.opcode() == kWasmRefNull;
-  uint8_t flags = (tgt_nullable ? 2 : 0) | (src_nullable ? 1 : 0);
-  std::vector<uint8_t> result = {kGCPrefix, kExprBrOnCastFail, flags};
-  result.insert(result.end(), label_leb.begin(), label_leb.end());
-  auto src_enc = WasmEncodeHeapType(source_type);
-  auto tgt_enc = WasmEncodeHeapType(target_type);
-  result.insert(result.end(), src_enc.begin(), src_enc.end());
-  result.insert(result.end(), tgt_enc.begin(), tgt_enc.end());
-  return result;
-}
-
-std::vector<uint8_t> WasmBrOnCastDescEq(uint32_t label_idx,
-                                         const RefTypeBuilder& source_type,
-                                         const RefTypeBuilder& target_type) {
-  auto label_leb = WasmUnsignedLeb(label_idx);
-  bool src_nullable = source_type.opcode() == kWasmRefNull;
-  bool tgt_nullable = target_type.opcode() == kWasmRefNull;
-  uint8_t flags = (tgt_nullable ? 2 : 0) | (src_nullable ? 1 : 0);
-  std::vector<uint8_t> result = {kGCPrefix, kExprBrOnCastDescEq, flags};
-  result.insert(result.end(), label_leb.begin(), label_leb.end());
-  auto src_enc = WasmEncodeHeapType(source_type);
-  auto tgt_enc = WasmEncodeHeapType(target_type);
-  result.insert(result.end(), src_enc.begin(), src_enc.end());
-  result.insert(result.end(), tgt_enc.begin(), tgt_enc.end());
-  return result;
-}
-
-std::vector<uint8_t> WasmBrOnCastDescEqFail(uint32_t label_idx,
-                                             const RefTypeBuilder& source_type,
-                                             const RefTypeBuilder& target_type) {
-  auto label_leb = WasmUnsignedLeb(label_idx);
-  bool src_nullable = source_type.opcode() == kWasmRefNull;
-  bool tgt_nullable = target_type.opcode() == kWasmRefNull;
-  uint8_t flags = (tgt_nullable ? 2 : 0) | (src_nullable ? 1 : 0);
-  std::vector<uint8_t> result = {kGCPrefix, kExprBrOnCastDescEqFail, flags};
-  result.insert(result.end(), label_leb.begin(), label_leb.end());
-  auto src_enc = WasmEncodeHeapType(source_type);
-  auto tgt_enc = WasmEncodeHeapType(target_type);
-  result.insert(result.end(), src_enc.begin(), src_enc.end());
-  result.insert(result.end(), tgt_enc.begin(), tgt_enc.end());
-  return result;
-}
-
-const char* GetOpcodeName(uint8_t opcode) {
-  switch (opcode) {
-    case 0x00: return "Unreachable";
-    case 0x01: return "Nop";
-    case 0x02: return "Block";
-    case 0x03: return "Loop";
-    case 0x04: return "If";
-    case 0x05: return "Else";
-    case 0x0b: return "End";
-    case 0x0c: return "Br";
-    case 0x0d: return "BrIf";
-    case 0x0e: return "BrTable";
-    case 0x0f: return "Return";
-    case 0x10: return "CallFunction";
-    case 0x11: return "CallIndirect";
-    case 0x1a: return "Drop";
-    case 0x1b: return "Select";
-    case 0x20: return "LocalGet";
-    case 0x21: return "LocalSet";
-    case 0x22: return "LocalTee";
-    case 0x23: return "GlobalGet";
-    case 0x24: return "GlobalSet";
-    case 0x41: return "I32Const";
-    case 0x42: return "I64Const";
-    case 0x43: return "F32Const";
-    case 0x44: return "F64Const";
-    case 0xd0: return "RefNull";
-    case 0xd1: return "RefIsNull";
-    case 0xd2: return "RefFunc";
-    case 0xd3: return "RefEq";
-    default: return "unknown";
-  }
-}
-
-std::vector<uint8_t> WasmF32ConstSignalingNaN() {
-  return {kExprF32Const, 0xb9, 0xa1, 0xa7, 0x7f};
-}
-
-std::vector<uint8_t> WasmF64ConstSignalingNaN() {
-  return {kExprF64Const, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf4, 0x7f};
 }
 
 }  // namespace wasm_builder
