@@ -1,30 +1,62 @@
 #ifndef BUILDER_WASM_BUILDER_H_
 #define BUILDER_WASM_BUILDER_H_
 
-#include <algorithm>
-#include <array>
 #include <cassert>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <functional>
-#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
-#include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
+
+#if defined(__has_include)
+#if __has_include(<execinfo.h>)
+#include <execinfo.h>
+#include <unistd.h>
+#define WASM_BUILDER_HAS_BACKTRACE 1
+#endif
+#endif
+
+#ifndef WASM_BUILDER_HAS_BACKTRACE
+#define WASM_BUILDER_HAS_BACKTRACE 0
+#endif
+
+namespace cat {
+namespace wasm_builder {
+namespace internal {
+
+inline void PrintCheckBacktrace() {
+#if WASM_BUILDER_HAS_BACKTRACE
+  void* trace[64];
+  int count = backtrace(trace, 64);
+  backtrace_symbols_fd(trace, count, STDERR_FILENO);
+#else
+  (void)0;
+#endif
+}
+
+}  // namespace internal
+}  // namespace wasm_builder
+}  // namespace cat
 
 #ifndef CHECK
 #define CHECK(cond) \
   do { \
     if (!(cond)) { \
-      assert(false); \
-      __builtin_trap(); \
+      std::fprintf(stderr, \
+                   "\n#\n" \
+                   "# Fatal error in %s, line %d\n" \
+                   "# Check failed: %s.\n" \
+                   "#\n", \
+                   __FILE__, __LINE__, #cond); \
+      ::cat::wasm_builder::internal::PrintCheckBacktrace(); \
+      std::abort(); \
     } \
   } while (0)
 #endif
@@ -671,7 +703,6 @@ class ImportGroupBuilder {
   ImportGroupBuilder(const ImportGroupBuilder&) = delete;
   ImportGroupBuilder& operator=(const ImportGroupBuilder&) = delete;
 
-  uint32_t Add(const std::string& name);
   uint32_t AddFunction(const std::string& name, const WasmSig& type);
   uint32_t AddFunction(const std::string& name, uint32_t type_index);
   uint32_t AddGlobal(const std::string& name,
@@ -847,11 +878,6 @@ class WasmModuleBuilder {
       const std::vector<std::vector<uint8_t>>& elements,
       std::variant<int8_t, RefTypeBuilder> type, bool is_shared = false);
 
-  // Table helpers
-  WasmModuleBuilder& AppendToTable(const std::vector<uint32_t>& array);
-  WasmModuleBuilder& SetTableBounds(
-      uint32_t min, std::optional<uint32_t> max = std::nullopt);
-
   // Recursive groups
   WasmModuleBuilder& StartRecGroup();
   WasmModuleBuilder& EndRecGroup();
@@ -1001,27 +1027,7 @@ std::vector<uint8_t> WasmUnsignedLeb(uint32_t val,
                                      int max_len = kMaxVarInt32Size);
 std::vector<uint8_t> WasmEncodeHeapType(const RefTypeBuilder& type);
 
-std::vector<uint8_t> GCInstr(uint8_t opcode);
-std::vector<uint8_t> SimdInstr(uint8_t opcode);
-
-std::vector<uint8_t> WasmBrOnCast(uint32_t label_idx,
-                                  const RefTypeBuilder& source_type,
-                                  const RefTypeBuilder& target_type);
-std::vector<uint8_t> WasmBrOnCastFail(uint32_t label_idx,
-                                      const RefTypeBuilder& source_type,
-                                      const RefTypeBuilder& target_type);
-std::vector<uint8_t> WasmBrOnCastDescEq(uint32_t label_idx,
-                                        const RefTypeBuilder& source_type,
-                                        const RefTypeBuilder& target_type);
-std::vector<uint8_t> WasmBrOnCastDescEqFail(
-    uint32_t label_idx, const RefTypeBuilder& source_type,
-    const RefTypeBuilder& target_type);
-
-const char* GetOpcodeName(uint8_t opcode);
 const char* GetTrapMessage(int trap_code);
-
-std::vector<uint8_t> WasmF32ConstSignalingNaN();
-std::vector<uint8_t> WasmF64ConstSignalingNaN();
 
 extern const WasmSig kSig_i_i;
 extern const WasmSig kSig_l_l;
