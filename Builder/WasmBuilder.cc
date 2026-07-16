@@ -1,4 +1,4 @@
-//Copyright (c) 2026, ShujaaQureshii
+// Copyright (c) 2026, ShujaaQureshii
 #include "WasmBuilder.h"
 #include <algorithm>
 #include <cstdint>
