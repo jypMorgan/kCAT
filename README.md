@@ -1,7 +1,5 @@
 # WasmBuilder and Intermediate Representation.
 
-## Design 
-
 WasmBuilder is a **Semantic WebAssembly Construction Kit**. Unlike a traditional assembler (e.g., `wat2wasm`) that maps text syntax directly to binary bytes, WasmBuilder maintains a full *in* memory **Intermediate Representation (IR)** of a WebAssembly module. Binary emission is a *backend concern* one of many possible consumers of the IR.
 
 This design and three execution modes:
@@ -9,13 +7,13 @@ This design and three execution modes:
 - **Semantic Interpretation**: Walk the IR directly to execute or analyze the module without ever materializing bytes or relying on semantic level *not* bytes code level execution.
 - **Structural Mutation**: Fuzz, optimize, or instrument the module by manipulating the IR graph, then reemit.
 
-The core principle is that **indices, types, and cross references are managed symbolically by the builder**, not by the user. This eliminates an entire class of bugs (index mismatches, invalid forward references) and provides a stable API for semantic tooling.
+The inner principle is that **indices, types, and cross references are managed symbolically by the builder**, this eliminates an entire class of bugs likewise (index mismatches, invalid forward references) and provides a stable API for semantic tooling.
 
 ---
 
-##  IR Layer And The Semantic Graph
+##  IR Layer And Semantic Graph.
 
-The IR known as (Intermediate Representation) is a heterogeneous graph rooted at `WasmModuleBuilder`. Every entity is an owned, typed object with explicit relationships.
+The (Intermediate Representation) is a heterogeneous graph rooted at `WasmModuleBuilder`. Every entity is an owned, typed object with explicit relationships.
 
 ###  Module (`WasmModuleBuilder`)
 
@@ -69,9 +67,10 @@ struct WasmSig {
 ```
 Parameters and results are **semantic type objects**, not encoded bytes. The `RefTypeBuilder` encodes reference type modifiers (nullable, shared, exact) as C++ method calls, *not* as **LEB128** bytes.
 
+
 #### `WasmStructType` And `WasmArrayType`
 
-GC (Garbage Collection) types are first class. Structs carry fields with mutability flags. Arrays carry element type and mutability. Both support supertyping, finality, and sharedness exactly as the GC proposal specifies, but represented as C++ structs.
+ (Garbage Collection) types are first class. Structs carry fields with mutability flags. Arrays carry element type and mutability. Both support supertyping, finality, and sharedness exactly as the GC proposal specifies, but represented as C++ structs.
 
 ### Imports And Exports
 
@@ -82,7 +81,7 @@ struct ImportEntry {
   std::string module;
   std::string name;
   uint8_t kind;
- /* kindspecific payload.. */
+ /* kind specific payload.. */
 };
 ```
 The user never writes a raw import index. The builder calls `AllocateImportIndex(kind);` which assigns the next available index for that kind and increments the appropriate counter (`num_imported_funcs_`, i,e.. and e,g..). This guarantees that imported indices are dense and correctly ordered per the Wasm spec (functions, tables, memories, globals, tags).
